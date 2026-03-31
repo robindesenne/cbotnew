@@ -1,0 +1,23 @@
+market:
+  type: spot
+  allow_short: false
+universe:
+  symbols: [BTCUSDT, ETHUSDT, SOLUSDT]
+  intervals: [15m,1h,4h]
+features_v2:
+  use_orderbook: true
+  use_funding: true
+  use_onchain: true
+  use_sentiment: true
+  use_regime_hmm: true
+risk_v2:
+  risk_per_trade_max: 0.03
+  vol_target_ann: 0.18
+  kill_switch_sharpe_30d: 0.5
+  kill_switch_dd: 0.12
+
+validation:
+  wf_train_days: 180
+  wf_cal_days: 60
+  wf_test_days: 60
+  wf_step_days: 60

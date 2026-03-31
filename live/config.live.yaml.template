@@ -1,0 +1,36 @@
+mode: live
+symbol: SOLUSDC
+interval: 15m
+timezone: UTC
+
+capital:
+  initial_quote: 1000.0
+
+risk:
+  max_position_pct: 1.0
+  min_notional: 10.0
+  daily_loss_limit_pct: 0.03
+  max_drawdown_pct: 0.10
+
+execution:
+  # IMPORTANT:
+  # - keep false until preflight passes and ARMED file is intentionally created
+  enable_live_orders: false
+  # target order size (quote asset, here USDC)
+  test_quote: 20.0
+  # absolute hard cap per order (fail-closed if test_quote > hard_max_quote_per_order)
+  hard_max_quote_per_order: 20.0
+  # do not use more than this % of free quote balance, even if test_quote is higher
+  max_use_of_free_quote_pct: 0.25
+  poll_seconds: 20
+
+controls:
+  kill_switch_file: live/KILL_SWITCH
+  arm_file: live/ARMED
+  state_file: live/state.live.json
+  log_file: live/logs/live_bot.live.jsonl
+
+binance:
+  base_url: https://api.binance.com
+  api_key_env: BINANCE_API_KEY
+  api_secret_env: BINANCE_API_SECRET

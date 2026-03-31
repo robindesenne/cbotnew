@@ -1,0 +1,44 @@
+market:
+  type: spot
+  allow_short: false
+
+exchange:
+  taker_fee: 0.001
+  maker_fee: 0.0005
+  slippage_bps: 2.0
+
+strategy:
+  htf_interval: 4h
+  ema_fast: 20
+  ema_slow: 50
+  ema_trend: 200
+  htf_ema_fast: 50
+  htf_ema_slow: 200
+  adx_length: 14
+  adx_trend_threshold: 20
+  atr_length: 14
+  rsi_length: 14
+  pullback_lookback: 4
+  pullback_atr_mult: 0.25
+  stop_atr_mult: 1.5
+  trail_atr_mult: 2.0
+  tp_r_multiple: 2.2
+  max_hold_bars: 64
+  min_rel_volume: 0.8
+  volatility_lookback: 100
+  min_vol_regime: 0.15
+  max_vol_regime: 0.85
+  rsi_long_min: 50
+  rsi_long_max: 72
+  rsi_short_min: 28
+  rsi_short_max: 50
+
+risk:
+  risk_per_trade: 0.005
+  max_position_pct: 0.25
+  cooldown_bars_after_loss: 8
+  cooldown_after_losses: 2
+  daily_loss_limit_pct: 0.02
+  min_stop_distance_bps: 15
+  min_notional: 10
+  max_leverage: 1.0

@@ -1,0 +1,40 @@
+market:
+  type: spot
+  allow_short: false
+
+universe:
+  symbols: [BTCUSDT, ETHUSDT, SOLUSDT]
+  intervals: [15m, 1h, 4h]
+
+validation:
+  train_days: 240
+  cal_days: 60
+  test_days: 60
+  step_days: 30
+  embargo_bars: 24
+  min_train_events: 300
+  min_cal_events: 80
+  min_test_events: 60
+
+risk:
+  risk_per_trade: 0.004
+  risk_per_trade_max: 0.012
+  max_position_pct: 0.20
+  min_notional: 10
+  daily_loss_limit_pct: 0.02
+  max_drawdown_kill: 0.12
+  vol_target_ann: 0.16
+
+execution:
+  taker_fee: 0.001
+  maker_fee: 0.0005
+  slippage_bps_base: 2.0
+  slippage_vol_multiplier: 1.0
+  latency_bars: 1
+
+model:
+  family: calibrated_gbdt
+  threshold_floor: 0.52
+  threshold_cap: 0.85
+  min_precision_cal: 0.50
+  min_trades_per_window: 3

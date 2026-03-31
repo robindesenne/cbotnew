@@ -1,0 +1,29 @@
+mode: paper   # paper | live
+symbol: SOLUSDC
+interval: 15m
+timezone: UTC
+
+capital:
+  initial_quote: 1000.0
+
+risk:
+  max_position_pct: 1.0
+  min_notional: 10.0
+  daily_loss_limit_pct: 0.03
+  max_drawdown_pct: 0.10
+
+execution:
+  fee_bps: 10
+  slippage_bps: 5
+  poll_seconds: 20
+  enable_live_orders: false
+
+controls:
+  kill_switch_file: live/KILL_SWITCH
+  state_file: live/state.json
+  log_file: live/logs/live_bot.jsonl
+
+binance:
+  base_url: https://api.binance.com
+  api_key_env: BINANCE_API_KEY
+  api_secret_env: BINANCE_API_SECRET
