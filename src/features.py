@@ -67,8 +67,40 @@ def add_features(df: pd.DataFrame) -> pd.DataFrame:
     # oscillators baseline
     df["rsi_14"] = _rsi(close, 14)
 
+    # MACD-like
+    ema_12 = close.ewm(span=12, adjust=False).mean()
+    ema_26 = close.ewm(span=26, adjust=False).mean()
+    df["macd"] = ema_12 - ema_26
+    df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
+    df["macd_hist"] = df["macd"] - df["macd_signal"]
+
+    # Trix-like
+    trix_1 = close.ewm(span=15, adjust=False).mean()
+    trix_2 = trix_1.ewm(span=15, adjust=False).mean()
+    trix_3 = trix_2.ewm(span=15, adjust=False).mean()
+    df["trix_15"] = trix_3.pct_change()
+
+    # Bollinger-like
+    bb_mid = close.rolling(20).mean()
+    bb_std = close.rolling(20).std()
+    df["bb_mid_20"] = bb_mid
+    df["bb_up_20_2"] = bb_mid + 2.0 * bb_std
+    df["bb_dn_20_2"] = bb_mid - 2.0 * bb_std
+    df["bb_width_20"] = (df["bb_up_20_2"] - df["bb_dn_20_2"]) / close.replace(0, np.nan)
+
+    # Stochastic-like
+    ll_14 = df["low"].rolling(14).min()
+    hh_14 = df["high"].rolling(14).max()
+    df["stoch_k_14"] = 100 * (close - ll_14) / (hh_14 - ll_14).replace(0, np.nan)
+    df["stoch_d_3"] = df["stoch_k_14"].rolling(3).mean()
+
+    # VWAP rolling proxy
+    tp = (df["high"] + df["low"] + df["close"]) / 3
+    df["vwap_96"] = (tp * df["volume"]).rolling(96).sum() / df["volume"].rolling(96).sum().replace(0, np.nan)
+    df["dist_vwap_96"] = close / df["vwap_96"] - 1
+
     # simple zscores
-    for c in ["range_pct", "atr_pct", "rv_24", "rel_volume"]:
+    for c in ["range_pct", "atr_pct", "rv_24", "rel_volume", "bb_width_20", "dist_vwap_96"]:
         mu = df[c].rolling(100).mean()
         sd = df[c].rolling(100).std().replace(0, np.nan)
         df[f"z_{c}"] = (df[c] - mu) / sd

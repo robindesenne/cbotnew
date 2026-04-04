@@ -21,6 +21,7 @@ from ..labels import fixed_horizon_label, triple_barrier_label
 from ..regime import regime_rules, regime_transition_prob
 from ..signals import final_trade_flag, primary_setups
 from .config import GLOBAL_CONFIG
+from .solusdt_pipeline import SolusdtPipelineSpec, build_solusdt_dataset
 
 
 @dataclass
@@ -245,6 +246,16 @@ def _oos_metrics(trades: pd.DataFrame, equity: pd.DataFrame) -> Dict[str, float]
 
 
 def prepare_full_dataset(root: Path, symbol: str, interval: str, cfg: dict) -> tuple[pd.DataFrame, str]:
+    if symbol.upper() == GLOBAL_CONFIG["solusdt"]["symbol"]:
+        return build_solusdt_dataset(
+            root,
+            SolusdtPipelineSpec(
+                interval=interval,
+                date_from=GLOBAL_CONFIG["solusdt"]["history_start"],
+                date_to=GLOBAL_CONFIG["solusdt"]["history_end"],
+            ),
+        )
+
     spec = LoadSpec(symbol=symbol, interval=interval, date_from="2010-01-01", date_to="2100-01-01", market_type=cfg.get("market", {}).get("type", "spot"))
     df, source = load_ohlcv(root, spec)
     df = add_features(df)

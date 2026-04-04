@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+import hashlib
 import re
 
 import pandas as pd
@@ -128,9 +129,40 @@ def fetch_binance_ohlcv(spec: LoadSpec) -> pd.DataFrame:
     return df[["ts", "open", "high", "low", "close", "volume"]].sort_values("ts").reset_index(drop=True)
 
 
+def _sol_cache_path(root: Path, spec: LoadSpec) -> Path:
+    key = f"{spec.symbol.upper()}|{spec.interval}|{spec.date_from}|{spec.date_to}|{spec.market_type}|{int(spec.prefer_local)}"
+    h = hashlib.sha256(key.encode()).hexdigest()[:16]
+    cdir = root / "data" / "cache" / "solusdt"
+    cdir.mkdir(parents=True, exist_ok=True)
+    return cdir / f"ohlcv_{h}.pkl"
+
+
 def load_ohlcv(root: Path, spec: LoadSpec) -> tuple[pd.DataFrame, str]:
+    # Fast-path optimized cache for SOLUSDT benchmark runs
+    is_sol = spec.symbol.upper() == "SOLUSDT"
+    cache_fp = _sol_cache_path(root, spec) if is_sol else None
+    if cache_fp is not None and cache_fp.exists():
+        try:
+            df = pd.read_pickle(cache_fp)
+            if not df.empty:
+                return df, "solusdt_cache"
+        except Exception:
+            pass
+
     if spec.prefer_local:
         local = load_local_ohlcv(root, spec)
         if local is not None:
+            if cache_fp is not None:
+                try:
+                    local.to_pickle(cache_fp)
+                except Exception:
+                    pass
             return local, "local_csv"
-    return fetch_binance_ohlcv(spec), "binance_api"
+
+    df = fetch_binance_ohlcv(spec)
+    if cache_fp is not None:
+        try:
+            df.to_pickle(cache_fp)
+        except Exception:
+            pass
+    return df, "binance_api"
