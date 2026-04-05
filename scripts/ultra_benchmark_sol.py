@@ -80,6 +80,8 @@ def main() -> int:
     p.add_argument("--date-from", default=GLOBAL_CONFIG["solusdt"]["history_start"])
     p.add_argument("--date-to", default="2026-12-31")
     p.add_argument("--limit", type=int, default=0, help="Limit number of strategies (0 = all)")
+    p.add_argument("--offset", type=int, default=0, help="Start index in sorted strategy list")
+    p.add_argument("--resume", action="store_true", help="Resume from existing summary_all.csv (skip completed strategies)")
     args = p.parse_args()
 
     out_root = ROOT / "reports" / "ultra_benchmark_sol" / args.run_id
@@ -90,8 +92,24 @@ def main() -> int:
     base_ohlcv = base_ds[["ts", "open", "high", "low", "close", "volume"]].copy()
 
     strategies = sorted(set(registry.list_names()))
+    if args.offset > 0:
+        strategies = strategies[args.offset:]
     if args.limit > 0:
         strategies = strategies[: args.limit]
+
+    summary_all_path = out_root / "summary_all.csv"
+    existing_results: List[Dict] = []
+    done = set()
+    if args.resume and summary_all_path.exists():
+        try:
+            exdf = pd.read_csv(summary_all_path)
+            existing_results = exdf.to_dict(orient="records")
+            done = set(exdf.get("strategy_name", pd.Series(dtype=str)).dropna().astype(str).tolist())
+        except Exception:
+            existing_results = []
+            done = set()
+
+    strategies = [s for s in strategies if s not in done]
 
     run_meta = {
         "run_id": args.run_id,
@@ -108,17 +126,24 @@ def main() -> int:
 
     print(f"[ultra-benchmark] run_id={args.run_id} strategies={len(strategies)} workers={args.max_workers}")
 
-    results: List[Dict] = []
+    results: List[Dict] = list(existing_results)
+
+    def checkpoint_write():
+        cdf = pd.DataFrame(results)
+        cdf.to_csv(summary_all_path, index=False)
+
     if args.max_workers <= 1:
         for i, name in enumerate(strategies, start=1):
             print(f"[{i}/{len(strategies)}] {name} ...")
             try:
                 res = _run_one(name, args.interval, args.date_from, args.date_to, args.cash, out_root, base_ohlcv)
                 results.append(res)
+                checkpoint_write()
                 print(f"    done trades={res.get('trades',0)} sharpe={res.get('sharpe',0):.3f} pf={res.get('profit_factor',0):.3f}")
             except Exception as e:
                 print(f"    ERROR: {e}")
                 results.append({"strategy_name": name, "error": str(e)})
+                checkpoint_write()
     else:
         with ThreadPoolExecutor(max_workers=args.max_workers) as ex:
             futs = {
@@ -132,10 +157,12 @@ def main() -> int:
                 try:
                     res = fut.result()
                     results.append(res)
+                    checkpoint_write()
                     print(f"[{done}/{len(strategies)}] {name} done sharpe={res.get('sharpe',0):.3f} pf={res.get('profit_factor',0):.3f}")
                 except Exception as e:
                     print(f"[{done}/{len(strategies)}] {name} ERROR: {e}")
                     results.append({"strategy_name": name, "error": str(e)})
+                    checkpoint_write()
 
     summary_df = pd.DataFrame(results)
     if "error" in summary_df.columns:
