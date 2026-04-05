@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -87,6 +88,14 @@ def main() -> int:
     out_root = ROOT / "reports" / "ultra_benchmark_sol" / args.run_id
     out_root.mkdir(parents=True, exist_ok=True)
 
+    # Early heartbeat files to avoid "silent" long phases
+    (out_root / "progress.json").write_text(json.dumps({
+        "run_id": args.run_id,
+        "status": "initializing",
+        "updated_at": now_iso(),
+        "stage": "loading_solusdt_pipeline",
+    }, indent=2))
+
     pipe_spec = SolusdtPipelineSpec(interval=args.interval, date_from=args.date_from, date_to=args.date_to)
     base_ds, source = build_solusdt_dataset(ROOT, pipe_spec)
     base_ohlcv = base_ds[["ts", "open", "high", "low", "close", "volume"]].copy()
@@ -124,7 +133,7 @@ def main() -> int:
     }
     (out_root / "run_meta.json").write_text(json.dumps(run_meta, indent=2))
 
-    print(f"[ultra-benchmark] run_id={args.run_id} strategies={len(strategies)} workers={args.max_workers}")
+    progress_path = out_root / "progress.json"
 
     results: List[Dict] = list(existing_results)
 
@@ -132,17 +141,35 @@ def main() -> int:
         cdf = pd.DataFrame(results)
         cdf.to_csv(summary_all_path, index=False)
 
+    def progress_write(status: str, current: int, total: int, strategy: str = ""):
+        payload = {
+            "run_id": args.run_id,
+            "status": status,
+            "current": current,
+            "total": total,
+            "strategy": strategy,
+            "updated_at": now_iso(),
+            "completed": len(results),
+        }
+        progress_path.write_text(json.dumps(payload, indent=2))
+
+    print(f"[ultra-benchmark] run_id={args.run_id} strategies={len(strategies)} workers={args.max_workers}", flush=True)
+    progress_write("running", 0, len(strategies), "")
+
     if args.max_workers <= 1:
         for i, name in enumerate(strategies, start=1):
-            print(f"[{i}/{len(strategies)}] {name} ...")
+            progress_write("running", i, len(strategies), name)
+            print(f"[{i}/{len(strategies)}] {name} ...", flush=True)
+            t0 = time.time()
             try:
                 res = _run_one(name, args.interval, args.date_from, args.date_to, args.cash, out_root, base_ohlcv)
+                res["runtime_sec"] = round(time.time() - t0, 2)
                 results.append(res)
                 checkpoint_write()
-                print(f"    done trades={res.get('trades',0)} sharpe={res.get('sharpe',0):.3f} pf={res.get('profit_factor',0):.3f}")
+                print(f"    done trades={res.get('trades',0)} sharpe={res.get('sharpe',0):.3f} pf={res.get('profit_factor',0):.3f} in {res['runtime_sec']}s", flush=True)
             except Exception as e:
-                print(f"    ERROR: {e}")
-                results.append({"strategy_name": name, "error": str(e)})
+                print(f"    ERROR: {e}", flush=True)
+                results.append({"strategy_name": name, "error": str(e), "runtime_sec": round(time.time() - t0, 2)})
                 checkpoint_write()
     else:
         with ThreadPoolExecutor(max_workers=args.max_workers) as ex:
@@ -154,13 +181,14 @@ def main() -> int:
             for fut in as_completed(futs):
                 name = futs[fut]
                 done += 1
+                progress_write("running", done, len(strategies), name)
                 try:
                     res = fut.result()
                     results.append(res)
                     checkpoint_write()
-                    print(f"[{done}/{len(strategies)}] {name} done sharpe={res.get('sharpe',0):.3f} pf={res.get('profit_factor',0):.3f}")
+                    print(f"[{done}/{len(strategies)}] {name} done sharpe={res.get('sharpe',0):.3f} pf={res.get('profit_factor',0):.3f}", flush=True)
                 except Exception as e:
-                    print(f"[{done}/{len(strategies)}] {name} ERROR: {e}")
+                    print(f"[{done}/{len(strategies)}] {name} ERROR: {e}", flush=True)
                     results.append({"strategy_name": name, "error": str(e)})
                     checkpoint_write()
 
@@ -185,8 +213,9 @@ def main() -> int:
         "n_results": int(len(summary_df)),
     }
     (out_root / "summary.json").write_text(json.dumps(final, indent=2))
+    progress_write("finished", len(strategies), len(strategies), "")
 
-    print(f"[ultra-benchmark] finished. outputs: {out_root}")
+    print(f"[ultra-benchmark] finished. outputs: {out_root}", flush=True)
     return 0
 
 
