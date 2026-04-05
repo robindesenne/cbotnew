@@ -13,16 +13,19 @@ def regime_rules(df: pd.DataFrame) -> pd.Series:
 
 
 def regime_transition_prob(regime: pd.Series, lookback: int = 200) -> pd.DataFrame:
-    """Markov empirique léger: probabilité de rester en bull/bear/range."""
+    """Markov empirique léger: probabilité de rester en bull/bear/range (version vectorisée)."""
     states = ["bull", "bear", "range"]
-    out = pd.DataFrame(index=regime.index, columns=[f"p_stay_{s}" for s in states], dtype=float)
-    for i in range(lookback, len(regime)):
-        w = regime.iloc[i - lookback:i]
-        prev = w.shift(1)
-        for s in states:
-            mask = prev == s
-            if mask.sum() == 0:
-                out.iloc[i, out.columns.get_loc(f"p_stay_{s}")] = 0.33
-            else:
-                out.iloc[i, out.columns.get_loc(f"p_stay_{s}")] = (w[mask] == s).mean()
+    prev = regime.shift(1)
+    out = pd.DataFrame(index=regime.index, dtype=float)
+
+    for s in states:
+        prev_s = (prev == s).astype(float)
+        stay_s = ((prev == s) & (regime == s)).astype(float)
+
+        denom = prev_s.rolling(lookback, min_periods=1).sum()
+        numer = stay_s.rolling(lookback, min_periods=1).sum()
+
+        p = numer / denom.replace(0, pd.NA)
+        out[f"p_stay_{s}"] = p.fillna(0.33)
+
     return out

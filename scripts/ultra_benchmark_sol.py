@@ -98,7 +98,7 @@ def main() -> int:
 
     pipe_spec = SolusdtPipelineSpec(interval=args.interval, date_from=args.date_from, date_to=args.date_to)
     base_ds, source = build_solusdt_dataset(ROOT, pipe_spec)
-    base_ohlcv = base_ds[["ts", "open", "high", "low", "close", "volume"]].copy()
+    base_ohlcv = base_ds.copy()
 
     strategies = sorted(set(registry.list_names()))
     if args.offset > 0:

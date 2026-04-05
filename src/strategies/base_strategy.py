@@ -44,23 +44,27 @@ class BaseStrategy(ABC):
     def prepare_dataset(self, df: pd.DataFrame, ctx: StrategyContext) -> pd.DataFrame:
         """
         Pipeline standardisé features + setup + labels + régime.
-        Les stratégies peuvent l'utiliser directement ou le surcharger.
+        Fast-path: si dataset déjà enrichi (pipeline SOLUSDT), éviter tout recalcul.
         """
         out = df.copy()
-        out = add_features(out)
 
-        setups = primary_setups(out)
-        out = pd.concat([out, setups], axis=1)
+        # Fast path: already engineered by backtest.solusdt_pipeline
+        required = {"setup_any", "label", "label_tb", "label_fh", "event_end_idx", "regime"}
+        if not required.issubset(set(out.columns)):
+            out = add_features(out)
 
-        h = int(ctx.horizon_bars)
-        out["label_tb"] = triple_barrier_label(out, horizon=h, up_mult=1.5, dn_mult=1.0)
-        out["label_fh"] = fixed_horizon_label(out, horizon=h, threshold=0.0)
-        out["label"] = out["label_tb"].fillna(out["label_fh"])
-        out["event_end_idx"] = np.minimum(np.arange(len(out)) + h, len(out) - 1)
+            setups = primary_setups(out)
+            out = pd.concat([out, setups], axis=1)
 
-        out["regime"] = regime_rules(out)
-        trans = regime_transition_prob(out["regime"]).fillna(0.33)
-        out = pd.concat([out, trans], axis=1)
+            h = int(ctx.horizon_bars)
+            out["label_tb"] = triple_barrier_label(out, horizon=h, up_mult=1.5, dn_mult=1.0)
+            out["label_fh"] = fixed_horizon_label(out, horizon=h, threshold=0.0)
+            out["label"] = out["label_tb"].fillna(out["label_fh"])
+            out["event_end_idx"] = np.minimum(np.arange(len(out)) + h, len(out) - 1)
+
+            out["regime"] = regime_rules(out)
+            trans = regime_transition_prob(out["regime"]).fillna(0.33)
+            out = pd.concat([out, trans], axis=1)
 
         if "trade_flag" not in out.columns:
             out["trade_flag"] = out.get("setup_any", 0).fillna(0).astype(int)
