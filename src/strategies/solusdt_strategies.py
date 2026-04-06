@@ -29,9 +29,13 @@ class MomentumBaseStrategy(BaseStrategy):
         mode = self.params.get("mode", "ema_cross")
 
         if mode == "ema_cross":
-            sig = np.where(x[f"ema_{fast}"] > x[f"ema_{slow}"], 1, -1)
+            ema_fast = x[f"ema_{fast}"] if f"ema_{fast}" in x.columns else x["close"].ewm(span=fast, adjust=False).mean()
+            ema_slow = x[f"ema_{slow}"] if f"ema_{slow}" in x.columns else x["close"].ewm(span=slow, adjust=False).mean()
+            sig = np.where(ema_fast > ema_slow, 1, -1)
         elif mode == "macd_like":
-            macd = x[f"ema_{fast}"] - x[f"ema_{slow}"]
+            ema_fast = x[f"ema_{fast}"] if f"ema_{fast}" in x.columns else x["close"].ewm(span=fast, adjust=False).mean()
+            ema_slow = x[f"ema_{slow}"] if f"ema_{slow}" in x.columns else x["close"].ewm(span=slow, adjust=False).mean()
+            macd = ema_fast - ema_slow
             sigl = macd.ewm(span=9, adjust=False).mean()
             sig = np.where(macd > sigl, 1, -1)
         elif mode == "trix_like":
@@ -280,19 +284,23 @@ class AdvancedBaseStrategy(BaseStrategy):
 
     def generate_signals(self, df: pd.DataFrame, ctx: StrategyContext) -> pd.DataFrame:
         x = self.prepare_dataset(df, ctx)
-        mode = self.params.get("mode", "label_agree")
+        mode = self.params.get("mode", "consensus_trend")
 
-        if mode == "label_agree":
-            sig = np.where((x["label_tb"] == 1) & (x["label_fh"] == 1), 1, np.where((x["label_tb"] == 0) & (x["label_fh"] == 0), -1, 0))
+        if mode == "consensus_trend":
+            trend_ok = (x["close"] > x["ema_50"]) & (x["mom_6"] > 0) & (x["mom_24"] > 0)
+            trend_bad = (x["close"] < x["ema_50"]) & (x["mom_6"] < 0) & (x["mom_24"] < 0)
+            sig = np.where(trend_ok & (x["rsi_14"] > 50), 1, np.where(trend_bad & (x["rsi_14"] < 50), -1, 0))
         elif mode == "meta_proxy":
             score = 0.4 * x["mom_12"].fillna(0) - 0.2 * x["atr_pct"].fillna(0) + 0.2 * x["z_rel_volume"].fillna(0) + 0.2 * x["dist_ema_50"].fillna(0)
             sig = np.where(score > score.rolling(80).quantile(0.6), 1, np.where(score < score.rolling(80).quantile(0.4), -1, 0))
-        elif mode == "triplebarrier_bias":
-            sig = np.where((x["label_tb"] == 1) & (x["close"] > x["ema_20"]), 1, np.where((x["label_tb"] == 0) & (x["close"] < x["ema_20"]), -1, 0))
+        elif mode == "breakout_bias":
+            up_break = (x["close"] > x["hh_20"]) & (x["close"] > x["ema_20"]) & (x["rel_volume"] > 1.1)
+            dn_break = (x["close"] < x["ll_20"]) & (x["close"] < x["ema_20"]) & (x["rel_volume"] > 1.1)
+            sig = np.where(up_break, 1, np.where(dn_break, -1, 0))
         elif mode == "regime_transition":
-            up = x.get("p_to_bull", pd.Series(0.33, index=x.index))
-            dn = x.get("p_to_bear", pd.Series(0.33, index=x.index))
-            sig = np.where(up > dn + 0.05, 1, np.where(dn > up + 0.05, -1, 0))
+            up = x.get("p_stay_bull", pd.Series(0.33, index=x.index))
+            dn = x.get("p_stay_bear", pd.Series(0.33, index=x.index))
+            sig = np.where((up > 0.60) & (x["mom_6"] > 0), 1, np.where((dn > 0.60) & (x["mom_6"] < 0), -1, 0))
         else:  # ensemble_vote
             v1 = (x["mom_6"] > 0).astype(int) - (x["mom_6"] < 0).astype(int)
             v2 = (x["rsi_14"] > 50).astype(int) - (x["rsi_14"] < 50).astype(int)
@@ -303,11 +311,11 @@ class AdvancedBaseStrategy(BaseStrategy):
         return _finalize(x, pd.Series(sig, index=x.index))
 
 
-class AdvancedLabelAgreeV1(AdvancedBaseStrategy): name, version, default_params = "advanced_label_agree", "1.0", {"mode": "label_agree"}
-class AdvancedMetaProxyV1(AdvancedBaseStrategy): name, version, default_params = "advanced_meta_proxy", "1.0", {"mode": "meta_proxy"}
-class AdvancedTripleBarrierBiasV1(AdvancedBaseStrategy): name, version, default_params = "advanced_tb_bias", "1.0", {"mode": "triplebarrier_bias"}
-class AdvancedRegimeTransitionV1(AdvancedBaseStrategy): name, version, default_params = "advanced_regime_transition", "1.0", {"mode": "regime_transition"}
-class AdvancedEnsembleVoteV1(AdvancedBaseStrategy): name, version, default_params = "advanced_ensemble_vote", "1.0", {"mode": "ensemble_vote"}
+class AdvancedLabelAgreeV1(AdvancedBaseStrategy): name, version, default_params = "advanced_label_agree", "1.1", {"mode": "consensus_trend"}
+class AdvancedMetaProxyV1(AdvancedBaseStrategy): name, version, default_params = "advanced_meta_proxy", "1.1", {"mode": "meta_proxy"}
+class AdvancedTripleBarrierBiasV1(AdvancedBaseStrategy): name, version, default_params = "advanced_tb_bias", "1.1", {"mode": "breakout_bias"}
+class AdvancedRegimeTransitionV1(AdvancedBaseStrategy): name, version, default_params = "advanced_regime_transition", "1.1", {"mode": "regime_transition"}
+class AdvancedEnsembleVoteV1(AdvancedBaseStrategy): name, version, default_params = "advanced_ensemble_vote", "1.1", {"mode": "ensemble_vote"}
 
 
 ALL_STRATEGIES = [
@@ -333,9 +341,11 @@ def register_solusdt_strategies() -> None:
         )
         try:
             registry.register(spec)
-        except ValueError:
-            # idempotent in repeated imports
-            pass
+        except ValueError as e:
+            # idempotent in repeated imports only
+            if "already registered" in str(e):
+                continue
+            raise
 
 
 register_solusdt_strategies()

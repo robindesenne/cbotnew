@@ -36,6 +36,14 @@ def _run_one(
     base_ohlcv: pd.DataFrame,
 ) -> Dict:
     spec = registry.get(strategy_name)
+    leakage_mode = os.getenv("CRYPTOBOT_LEAKAGE_MODE", "error").strip().lower() or "error"
+    if getattr(spec, "forbidden_refs", None):
+        msg = f"Leakage guard blocked strategy {strategy_name}: forbidden refs {spec.forbidden_refs}"
+        if leakage_mode in {"warn", "audit"}:
+            print(f"[WARN] {msg}", flush=True)
+        else:
+            raise RuntimeError(msg)
+
     strategy = spec.build()
 
     ctx = StrategyContext(
@@ -66,6 +74,7 @@ def _run_one(
     summary["strategy_name"] = strategy_name
     summary["strategy_family"] = spec.family
     summary["strategy_version"] = spec.version
+    summary["forbidden_refs"] = ",".join(getattr(spec, "forbidden_refs", []) or [])
 
     out_dir = out_root / strategy_name
     save_backtest_outputs(ROOT, str(out_dir.relative_to(ROOT)), summary, trades, equity)
