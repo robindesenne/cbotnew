@@ -291,20 +291,30 @@ def run_single_backtest(
     d1 = pd.Timestamp(date_to, tz="UTC") + pd.Timedelta(days=1)
     df = df[(df.ts >= d0) & (df.ts < d1)].copy()
 
-    df["regime"] = regime_rules(df)
-    trans = regime_transition_prob(df["regime"]).fillna(0.33)
-    df = pd.concat([df, trans], axis=1)
+    # avoid recompute if already prepared by pipeline/strategy
+    if "regime" not in df.columns:
+        df["regime"] = regime_rules(df)
+    if not {"p_stay_bull", "p_stay_bear", "p_stay_range"}.issubset(set(df.columns)):
+        trans = regime_transition_prob(df["regime"]).fillna(0.33)
+        df = pd.concat([df, trans], axis=1)
 
     feats = feature_columns(df)
     ml = df.dropna(subset=feats + ["label", "setup_any", "event_end_idx"]).copy()
     ml = ml[ml["setup_any"] == 1].copy().reset_index(drop=True)
 
+    # speed guardrail for ultra benchmark: keep most recent rows only
+    max_rows = int(GLOBAL_CONFIG.get("max_ml_rows_per_strategy", 0) or 0)
+    if max_rows > 0 and len(ml) > max_rows:
+        ml = ml.iloc[-max_rows:].reset_index(drop=True)
+
     leakage_warnings = _warn_leakage(ml)
 
+    fallback_trade_flag = df.get("trade_flag", df.get("setup_any", 0)).fillna(0).astype(int).copy()
     df["meta_proba"] = 0.0
-    df["trade_flag"] = 0
+    df["model_trade_flag"] = 0
 
     outer_logs: List[Dict] = []
+    ts_to_df_idx = df.reset_index().set_index("ts")["index"]
     if len(ml) >= GLOBAL_CONFIG["min_train_rows"] + GLOBAL_CONFIG["min_test_rows"] and ml["label"].nunique() > 1:
         outer = _chrono_slices(len(ml), GLOBAL_CONFIG["outer_splits"])
         for fold, (tr_idx, te_idx) in enumerate(outer, start=1):
@@ -334,8 +344,7 @@ def run_single_backtest(
             oos_auc = float(roc_auc_score(yte, pte)) if yte.nunique() > 1 else 0.5
 
             # OOS only predictions written on test slice
-            raw_idx = ml.iloc[te_idx].index
-            df_idx = ml.iloc[te_idx]["ts"].map(df.reset_index().set_index("ts")["index"]).values
+            df_idx = ml.iloc[te_idx]["ts"].map(ts_to_df_idx).values
             for pos, di in enumerate(df_idx):
                 if pd.notna(di):
                     dfi = int(di)
@@ -352,7 +361,13 @@ def run_single_backtest(
 
             # threshold applied only on current OOS test block
             test_mask = df.index.isin(df.index[df_idx.astype(int)])
-            df.loc[test_mask, "trade_flag"] = final_trade_flag(df.loc[test_mask], "meta_proba", thr)
+            df.loc[test_mask, "model_trade_flag"] = final_trade_flag(df.loc[test_mask], "meta_proba", thr)
+
+    if outer_logs:
+        df["trade_flag"] = df["model_trade_flag"].fillna(0).astype(int)
+    else:
+        # If no valid OOS folds, keep strategy-native signal instead of forcing flat portfolio.
+        df["trade_flag"] = fallback_trade_flag
 
     tdf, edf = simulate_spot_long_only(df, cfg)
 
