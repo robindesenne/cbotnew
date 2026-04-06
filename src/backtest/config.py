@@ -12,6 +12,7 @@ GLOBAL_CONFIG = {
     "min_test_rows": 120,
     "threshold_grid": [0.50, 0.55, 0.60, 0.65, 0.70, 0.75],
     "min_precision": 0.52,
+    "max_ml_rows_per_strategy": 12000,
     "solusdt": {
         "symbol": "SOLUSDT",
         "default_timeframe": "1h",
