@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 
@@ -25,7 +26,7 @@ def regime_transition_prob(regime: pd.Series, lookback: int = 200) -> pd.DataFra
         denom = prev_s.rolling(lookback, min_periods=1).sum()
         numer = stay_s.rolling(lookback, min_periods=1).sum()
 
-        p = numer / denom.replace(0, pd.NA)
-        out[f"p_stay_{s}"] = p.fillna(0.33)
+        p = numer / denom.replace(0, np.nan)
+        out[f"p_stay_{s}"] = p.fillna(0.33).astype(float)
 
     return out

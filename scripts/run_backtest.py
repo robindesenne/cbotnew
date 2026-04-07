@@ -16,6 +16,9 @@ sys.path.insert(0, str(ROOT))
 from src.backtest import prepare_full_dataset, run_single_backtest, save_backtest_outputs
 
 
+REQUIRED_PREPARED_COLUMNS = {"ts", "open", "high", "low", "close", "volume", "label", "setup_any", "event_end_idx"}
+
+
 def _algo_fingerprint(root: Path) -> str:
     h = hashlib.sha256()
     paths = [root / 'config.yaml', root / 'scripts' / 'run_backtest.py']
@@ -44,6 +47,12 @@ def _run_fingerprint(root: Path, args) -> dict:
         'cash': float(args.cash),
     }
 
+
+def _prepared_cache_is_compatible(df: pd.DataFrame | None) -> bool:
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return False
+    missing = REQUIRED_PREPARED_COLUMNS - set(df.columns)
+    return not missing
 
 
 def main():
@@ -87,7 +96,7 @@ def main():
 
     if pcache.exists():
         loaded = _try_load_pickle(pcache)
-        if loaded is not None:
+        if _prepared_cache_is_compatible(loaded):
             prepared_df = loaded
             prepared_source = "prepared_cache"
             prepared_cache_hit = True
@@ -98,7 +107,7 @@ def main():
         candidates = sorted(pdir.glob(f"{args.symbol}_{args.interval}_*.pkl"), key=lambda x: x.stat().st_mtime, reverse=True)
         for cand in candidates:
             loaded = _try_load_pickle(cand)
-            if loaded is not None:
+            if _prepared_cache_is_compatible(loaded):
                 prepared_df = loaded
                 prepared_source = "prepared_cache_stale"
                 prepared_cache_hit = True

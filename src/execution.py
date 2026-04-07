@@ -3,7 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 
-def simulate_spot_long_only(df: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
+def simulate_spot_long_only(df: pd.DataFrame, cfg: dict, initial_cash: float = 10000.0) -> tuple[pd.DataFrame, pd.DataFrame]:
     ex = cfg["exchange"]
     rk = cfg["risk"]
     st = cfg["strategy"]
@@ -11,7 +11,7 @@ def simulate_spot_long_only(df: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, 
     fee = float(ex["taker_fee"])
     slip = float(ex["slippage_bps"]) / 10000.0
 
-    cash = 10000.0
+    cash = float(initial_cash)
     pos = None
     peak = cash
     daily_start = cash

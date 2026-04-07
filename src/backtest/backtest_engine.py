@@ -369,7 +369,7 @@ def run_single_backtest(
         # If no valid OOS folds, keep strategy-native signal instead of forcing flat portfolio.
         df["trade_flag"] = fallback_trade_flag
 
-    tdf, edf = simulate_spot_long_only(df, cfg)
+    tdf, edf = simulate_spot_long_only(df, cfg, initial_cash=float(cash))
 
     metrics = _oos_metrics(tdf, edf)
     summary = {
