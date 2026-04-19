@@ -92,6 +92,8 @@ def main() -> int:
     p.add_argument("--limit", type=int, default=0, help="Limit number of strategies (0 = all)")
     p.add_argument("--offset", type=int, default=0, help="Start index in sorted strategy list")
     p.add_argument("--resume", action="store_true", help="Resume from existing summary_all.csv (skip completed strategies)")
+    p.add_argument("--strategy-file", default="", help="Path to newline-separated strategy names to include")
+    p.add_argument("--strategies", default="", help="Comma-separated strategy names to include")
     args = p.parse_args()
 
     out_root = ROOT / "reports" / "ultra_benchmark_sol" / args.run_id
@@ -110,6 +112,17 @@ def main() -> int:
     base_ohlcv = base_ds.copy()
 
     strategies = sorted(set(registry.list_names()))
+
+    include_set = set()
+    if args.strategies.strip():
+        include_set.update([s.strip() for s in args.strategies.split(',') if s.strip()])
+    if args.strategy_file:
+        sfp = Path(args.strategy_file)
+        if sfp.exists():
+            include_set.update([ln.strip() for ln in sfp.read_text().splitlines() if ln.strip() and not ln.strip().startswith('#')])
+    if include_set:
+        strategies = [s for s in strategies if s in include_set]
+
     if args.offset > 0:
         strategies = strategies[args.offset:]
     if args.limit > 0:

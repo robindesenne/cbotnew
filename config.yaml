@@ -1,12 +1,10 @@
 market:
   type: spot
   allow_short: false
-
 exchange:
   taker_fee: 0.001
   maker_fee: 0.0005
   slippage_bps: 2.0
-
 strategy:
   htf_interval: 4h
   ema_fast: 20
@@ -32,7 +30,6 @@ strategy:
   rsi_long_max: 72
   rsi_short_min: 28
   rsi_short_max: 50
-
 risk:
   risk_per_trade: 0.005
   max_position_pct: 0.25

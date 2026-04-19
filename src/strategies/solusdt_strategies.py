@@ -11,8 +11,24 @@ def _finalize(df: pd.DataFrame, signal: pd.Series) -> pd.DataFrame:
     out = df.copy()
     s = signal.fillna(0).clip(-1, 1).astype(int)
     out["signal"] = s
-    out["trade_flag"] = (s == 1).astype(int)  # compatibility current engine (long-only executor)
-    out["meta_proba"] = np.where(s == 1, 0.7, np.where(s == -1, 0.3, 0.5))
+
+    # Global long-only quality gates to reduce noisy entries
+    trend_ok = pd.Series(True, index=out.index)
+    if "ema_200" in out.columns:
+        trend_ok = out["close"] > out["ema_200"]
+
+    vol_ok = pd.Series(True, index=out.index)
+    if "atr_pct" in out.columns:
+        vol_cap = out["atr_pct"].rolling(200, min_periods=50).quantile(0.90)
+        vol_ok = out["atr_pct"] <= vol_cap
+
+    liq_ok = pd.Series(True, index=out.index)
+    if "rel_volume" in out.columns:
+        liq_ok = out["rel_volume"].fillna(0) >= 0.65
+
+    long_gate = trend_ok.fillna(False) & vol_ok.fillna(False) & liq_ok.fillna(False)
+    out["trade_flag"] = ((s == 1) & long_gate).astype(int)  # long-only executor compatibility
+    out["meta_proba"] = np.where(s == 1, 0.68, np.where(s == -1, 0.32, 0.50))
     return out
 
 
@@ -32,6 +48,33 @@ class MomentumBaseStrategy(BaseStrategy):
             ema_fast = x[f"ema_{fast}"] if f"ema_{fast}" in x.columns else x["close"].ewm(span=fast, adjust=False).mean()
             ema_slow = x[f"ema_{slow}"] if f"ema_{slow}" in x.columns else x["close"].ewm(span=slow, adjust=False).mean()
             sig = np.where(ema_fast > ema_slow, 1, -1)
+        elif mode == "ema_cross_event":
+            ema_fast = x[f"ema_{fast}"] if f"ema_{fast}" in x.columns else x["close"].ewm(span=fast, adjust=False).mean()
+            ema_slow = x[f"ema_{slow}"] if f"ema_{slow}" in x.columns else x["close"].ewm(span=slow, adjust=False).mean()
+            cross_up = (ema_fast > ema_slow) & (ema_fast.shift(1) <= ema_slow.shift(1))
+            sig = np.where(cross_up, 1, 0)
+        elif mode == "ema_cross_event_vol":
+            ema_fast = x[f"ema_{fast}"] if f"ema_{fast}" in x.columns else x["close"].ewm(span=fast, adjust=False).mean()
+            ema_slow = x[f"ema_{slow}"] if f"ema_{slow}" in x.columns else x["close"].ewm(span=slow, adjust=False).mean()
+            cross_up = (ema_fast > ema_slow) & (ema_fast.shift(1) <= ema_slow.shift(1))
+            vol_ok = (x["rv_24"] < x["rv_96"]) if {"rv_24", "rv_96"}.issubset(x.columns) else pd.Series(True, index=x.index)
+            sig = np.where(cross_up & vol_ok.fillna(False), 1, 0)
+        elif mode == "ema_cross_event_vol_dist":
+            ema_fast = x[f"ema_{fast}"] if f"ema_{fast}" in x.columns else x["close"].ewm(span=fast, adjust=False).mean()
+            ema_slow = x[f"ema_{slow}"] if f"ema_{slow}" in x.columns else x["close"].ewm(span=slow, adjust=False).mean()
+            cross_up = (ema_fast > ema_slow) & (ema_fast.shift(1) <= ema_slow.shift(1))
+            vol_ok = (x["rv_24"] < x["rv_96"]) if {"rv_24", "rv_96"}.issubset(x.columns) else pd.Series(True, index=x.index)
+            dist_min = float(self.params.get("dist_min", 0.01))
+            trend_strength_ok = (x["dist_ema_200"] >= dist_min) if "dist_ema_200" in x.columns else pd.Series(True, index=x.index)
+            sig = np.where(cross_up & vol_ok.fillna(False) & trend_strength_ok.fillna(False), 1, 0)
+        elif mode == "ema_cross_event_vol_slope":
+            ema_fast = x[f"ema_{fast}"] if f"ema_{fast}" in x.columns else x["close"].ewm(span=fast, adjust=False).mean()
+            ema_slow = x[f"ema_{slow}"] if f"ema_{slow}" in x.columns else x["close"].ewm(span=slow, adjust=False).mean()
+            cross_up = (ema_fast > ema_slow) & (ema_fast.shift(1) <= ema_slow.shift(1))
+            vol_ok = (x["rv_24"] < x["rv_96"]) if {"rv_24", "rv_96"}.issubset(x.columns) else pd.Series(True, index=x.index)
+            slope_min = float(self.params.get("slope_min", 0.0))
+            trend_slope_ok = (x["slope_ema_50"] > slope_min) if "slope_ema_50" in x.columns else pd.Series(True, index=x.index)
+            sig = np.where(cross_up & vol_ok.fillna(False) & trend_slope_ok.fillna(False), 1, 0)
         elif mode == "macd_like":
             ema_fast = x[f"ema_{fast}"] if f"ema_{fast}" in x.columns else x["close"].ewm(span=fast, adjust=False).mean()
             ema_slow = x[f"ema_{slow}"] if f"ema_{slow}" in x.columns else x["close"].ewm(span=slow, adjust=False).mean()
@@ -48,16 +91,20 @@ class MomentumBaseStrategy(BaseStrategy):
             roc = x["close"].pct_change(int(self.params.get("roc_h", 12)))
             sig = np.where(roc > 0, 1, -1)
         else:  # dual_mom
-            sig = np.where((x["mom_6"] > 0) & (x["mom_24"] > 0), 1, -1)
+            sig = np.where((x["mom_12"] > 0) & (x["mom_48"] > 0) & (x["close"] > x["ema_100"]), 1, -1)
 
         return _finalize(x, pd.Series(sig, index=x.index))
 
 
-class MomentumEMACrossV1(MomentumBaseStrategy): name, version, default_params = "momentum_ema_cross", "1.0", {"mode": "ema_cross", "fast": 20, "slow": 50}
-class MomentumMACDV1(MomentumBaseStrategy): name, version, default_params = "momentum_macd", "1.0", {"mode": "macd_like", "fast": 12, "slow": 26}
-class MomentumTrixV1(MomentumBaseStrategy): name, version, default_params = "momentum_trix", "1.0", {"mode": "trix_like", "fast": 15}
-class MomentumROCV1(MomentumBaseStrategy): name, version, default_params = "momentum_roc", "1.0", {"mode": "roc", "roc_h": 12, "fast": 20, "slow": 50}
-class MomentumDualV1(MomentumBaseStrategy): name, version, default_params = "momentum_dual", "1.0", {"mode": "dual"}
+class MomentumEMACrossV1(MomentumBaseStrategy): name, version, default_params = "momentum_ema_cross", "1.1", {"mode": "ema_cross", "fast": 50, "slow": 200}
+class MomentumEMACrossEventV1(MomentumBaseStrategy): name, version, default_params = "momentum_ema_cross_event", "1.0", {"mode": "ema_cross_event", "fast": 50, "slow": 200}
+class MomentumEMACrossEventVolV1(MomentumBaseStrategy): name, version, default_params = "momentum_ema_cross_event_vol", "1.0", {"mode": "ema_cross_event_vol", "fast": 50, "slow": 200}
+class MomentumEMACrossEventVolDistV1(MomentumBaseStrategy): name, version, default_params = "momentum_ema_cross_event_vol_dist", "1.0", {"mode": "ema_cross_event_vol_dist", "fast": 50, "slow": 200, "dist_min": 0.01}
+class MomentumEMACrossEventVolSlopeV1(MomentumBaseStrategy): name, version, default_params = "momentum_ema_cross_event_vol_slope", "1.0", {"mode": "ema_cross_event_vol_slope", "fast": 50, "slow": 200, "slope_min": 0.0}
+class MomentumMACDV1(MomentumBaseStrategy): name, version, default_params = "momentum_macd", "1.1", {"mode": "macd_like", "fast": 12, "slow": 26}
+class MomentumTrixV1(MomentumBaseStrategy): name, version, default_params = "momentum_trix", "1.1", {"mode": "trix_like", "fast": 24}
+class MomentumROCV1(MomentumBaseStrategy): name, version, default_params = "momentum_roc", "1.1", {"mode": "roc", "roc_h": 24, "fast": 50, "slow": 200}
+class MomentumDualV1(MomentumBaseStrategy): name, version, default_params = "momentum_dual", "1.1", {"mode": "dual"}
 
 
 # =========================
@@ -71,8 +118,9 @@ class MeanRevBaseStrategy(BaseStrategy):
         mode = self.params.get("mode", "rsi")
 
         if mode == "rsi":
-            lo, hi = self.params.get("lo", 30), self.params.get("hi", 70)
-            sig = np.where(x["rsi_14"] < lo, 1, np.where(x["rsi_14"] > hi, -1, 0))
+            lo, hi = self.params.get("lo", 25), self.params.get("hi", 75)
+            sig = np.where((x["rsi_14"] < lo) & (x["close"] > x["ema_200"]), 1,
+                           np.where((x["rsi_14"] > hi) & (x["close"] < x["ema_200"]), -1, 0))
         elif mode == "bollinger":
             n = int(self.params.get("n", 20)); k = float(self.params.get("k", 2.0))
             ma = x["close"].rolling(n).mean(); sd = x["close"].rolling(n).std()
@@ -84,19 +132,31 @@ class MeanRevBaseStrategy(BaseStrategy):
             k = 100 * (x["close"] - ll) / (hh - ll).replace(0, np.nan)
             sig = np.where(k < 20, 1, np.where(k > 80, -1, 0))
         elif mode == "zscore":
-            z = (x["close"] - x["close"].rolling(48).mean()) / x["close"].rolling(48).std().replace(0, np.nan)
-            sig = np.where(z < -2, 1, np.where(z > 2, -1, 0))
+            z = (x["close"] - x["close"].rolling(72).mean()) / x["close"].rolling(72).std().replace(0, np.nan)
+            sig = np.where((z < -2.2) & (x["close"] > x["ema_200"]), 1,
+                           np.where((z > 2.2) & (x["close"] < x["ema_200"]), -1, 0))
         else:  # drawdown bounce
-            sig = np.where(x["local_drawdown_48"] < -0.07, 1, np.where(x["local_drawdown_48"] > -0.01, -1, 0))
+            entry_dd = float(self.params.get("entry_dd", -0.09))
+            exit_dd = float(self.params.get("exit_dd", -0.01))
+            use_vol_filter = bool(self.params.get("use_vol_filter", False))
+            vol_ok = (x["rv_24"] < x["rv_96"]) if ({"rv_24", "rv_96"}.issubset(x.columns) and use_vol_filter) else pd.Series(True, index=x.index)
+            sig = np.where((x["local_drawdown_48"] < entry_dd) & (x["close"] > x["ema_200"]) & vol_ok.fillna(False), 1,
+                           np.where(x["local_drawdown_48"] > exit_dd, -1, 0))
 
         return _finalize(x, pd.Series(sig, index=x.index))
 
 
-class MeanRevRSIV1(MeanRevBaseStrategy): name, version, default_params = "meanrev_rsi", "1.0", {"mode": "rsi", "lo": 30, "hi": 70}
-class MeanRevBollingerV1(MeanRevBaseStrategy): name, version, default_params = "meanrev_bollinger", "1.0", {"mode": "bollinger", "n": 20, "k": 2.0}
-class MeanRevStochV1(MeanRevBaseStrategy): name, version, default_params = "meanrev_stoch", "1.0", {"mode": "stoch", "n": 14}
-class MeanRevZScoreV1(MeanRevBaseStrategy): name, version, default_params = "meanrev_zscore", "1.0", {"mode": "zscore"}
-class MeanRevDrawdownV1(MeanRevBaseStrategy): name, version, default_params = "meanrev_drawdown_bounce", "1.0", {"mode": "drawdown"}
+class MeanRevRSIV1(MeanRevBaseStrategy): name, version, default_params = "meanrev_rsi", "1.1", {"mode": "rsi", "lo": 25, "hi": 75}
+class MeanRevBollingerV1(MeanRevBaseStrategy): name, version, default_params = "meanrev_bollinger", "1.1", {"mode": "bollinger", "n": 30, "k": 2.2}
+class MeanRevStochV1(MeanRevBaseStrategy): name, version, default_params = "meanrev_stoch", "1.1", {"mode": "stoch", "n": 21}
+class MeanRevZScoreV1(MeanRevBaseStrategy): name, version, default_params = "meanrev_zscore", "1.1", {"mode": "zscore"}
+class MeanRevDrawdownV1(MeanRevBaseStrategy): name, version, default_params = "meanrev_drawdown_bounce", "1.1", {"mode": "drawdown"}
+class MeanRevDrawdownLooseV1(MeanRevBaseStrategy): name, version, default_params = "meanrev_drawdown_bounce_loose", "1.0", {"mode": "drawdown", "entry_dd": -0.07, "exit_dd": -0.01}
+class MeanRevDrawdownDeepV1(MeanRevBaseStrategy): name, version, default_params = "meanrev_drawdown_bounce_deep", "1.0", {"mode": "drawdown", "entry_dd": -0.12, "exit_dd": -0.01}
+class MeanRevDrawdownLoose05V1(MeanRevBaseStrategy): name, version, default_params = "meanrev_drawdown_bounce_loose05", "1.0", {"mode": "drawdown", "entry_dd": -0.05, "exit_dd": -0.01}
+class MeanRevDrawdownLooseVolV1(MeanRevBaseStrategy): name, version, default_params = "meanrev_drawdown_bounce_loose_vol", "1.0", {"mode": "drawdown", "entry_dd": -0.07, "exit_dd": -0.01, "use_vol_filter": True}
+class MeanRevDrawdownLoose05FastExitV1(MeanRevBaseStrategy): name, version, default_params = "meanrev_drawdown_bounce_loose05_fastexit", "1.0", {"mode": "drawdown", "entry_dd": -0.05, "exit_dd": -0.03}
+class MeanRevDrawdownLoose05SlowExitV1(MeanRevBaseStrategy): name, version, default_params = "meanrev_drawdown_bounce_loose05_slowexit", "1.0", {"mode": "drawdown", "entry_dd": -0.05, "exit_dd": -0.005}
 
 
 # =========================
@@ -110,16 +170,18 @@ class BreakoutBaseStrategy(BaseStrategy):
         mode = self.params.get("mode", "donchian")
 
         if mode == "donchian":
-            n = int(self.params.get("n", 20))
+            n = int(self.params.get("n", 55))
             hh = x["high"].rolling(n).max().shift(1)
             ll = x["low"].rolling(n).min().shift(1)
-            sig = np.where(x["close"] > hh, 1, np.where(x["close"] < ll, -1, 0))
+            sig = np.where((x["close"] > hh) & (x["close"] > x["ema_200"]), 1,
+                           np.where((x["close"] < ll) & (x["close"] < x["ema_200"]), -1, 0))
         elif mode == "pivot":
             pp = (x["high"].shift(1) + x["low"].shift(1) + x["close"].shift(1)) / 3
             sig = np.where(x["close"] > pp * 1.002, 1, np.where(x["close"] < pp * 0.998, -1, 0))
         elif mode == "range_break":
             width = (x["hh_20"] - x["ll_20"]) / x["close"].replace(0, np.nan)
-            sig = np.where((x["breakout_up"] == 1) & (width < 0.05), 1, np.where(x["breakout_dn"] == 1, -1, 0))
+            sig = np.where((x["breakout_up"] == 1) & (width < 0.04) & (x["close"] > x["ema_100"]), 1,
+                           np.where((x["breakout_dn"] == 1) & (x["close"] < x["ema_100"]), -1, 0))
         elif mode == "swing":
             swing_hi = x["high"].rolling(10).max().shift(1)
             swing_lo = x["low"].rolling(10).min().shift(1)
@@ -132,11 +194,11 @@ class BreakoutBaseStrategy(BaseStrategy):
         return _finalize(x, pd.Series(sig, index=x.index))
 
 
-class BreakoutDonchianV1(BreakoutBaseStrategy): name, version, default_params = "breakout_donchian", "1.0", {"mode": "donchian", "n": 20}
-class BreakoutPivotV1(BreakoutBaseStrategy): name, version, default_params = "breakout_pivot", "1.0", {"mode": "pivot"}
-class BreakoutRangeV1(BreakoutBaseStrategy): name, version, default_params = "breakout_range", "1.0", {"mode": "range_break"}
-class BreakoutSwingV1(BreakoutBaseStrategy): name, version, default_params = "breakout_swing", "1.0", {"mode": "swing"}
-class BreakoutOrderBlockProxyV1(BreakoutBaseStrategy): name, version, default_params = "breakout_orderblock_proxy", "1.0", {"mode": "orderblock"}
+class BreakoutDonchianV1(BreakoutBaseStrategy): name, version, default_params = "breakout_donchian", "1.1", {"mode": "donchian", "n": 55}
+class BreakoutPivotV1(BreakoutBaseStrategy): name, version, default_params = "breakout_pivot", "1.1", {"mode": "pivot"}
+class BreakoutRangeV1(BreakoutBaseStrategy): name, version, default_params = "breakout_range", "1.1", {"mode": "range_break"}
+class BreakoutSwingV1(BreakoutBaseStrategy): name, version, default_params = "breakout_swing", "1.1", {"mode": "swing"}
+class BreakoutOrderBlockProxyV1(BreakoutBaseStrategy): name, version, default_params = "breakout_orderblock_proxy", "1.1", {"mode": "orderblock"}
 
 
 # =========================
@@ -166,11 +228,11 @@ class VolRegimeBaseStrategy(BaseStrategy):
         return _finalize(x, pd.Series(sig, index=x.index))
 
 
-class VolAtrExpandV1(VolRegimeBaseStrategy): name, version, default_params = "vol_atr_expand", "1.0", {"mode": "atr_expand"}
-class VolKeltnerV1(VolRegimeBaseStrategy): name, version, default_params = "vol_keltner", "1.0", {"mode": "keltner"}
-class VolRvRegimeV1(VolRegimeBaseStrategy): name, version, default_params = "vol_rv_regime", "1.0", {"mode": "rv_regime"}
-class VolTrendRegimeV1(VolRegimeBaseStrategy): name, version, default_params = "vol_regime_trend", "1.0", {"mode": "regime_trend_only"}
-class VolCompressionBreakV1(VolRegimeBaseStrategy): name, version, default_params = "vol_compression_breakout", "1.0", {"mode": "compression"}
+class VolAtrExpandV1(VolRegimeBaseStrategy): name, version, default_params = "vol_atr_expand", "1.1", {"mode": "atr_expand"}
+class VolKeltnerV1(VolRegimeBaseStrategy): name, version, default_params = "vol_keltner", "1.1", {"mode": "keltner"}
+class VolRvRegimeV1(VolRegimeBaseStrategy): name, version, default_params = "vol_rv_regime", "1.1", {"mode": "rv_regime"}
+class VolTrendRegimeV1(VolRegimeBaseStrategy): name, version, default_params = "vol_regime_trend", "1.1", {"mode": "regime_trend_only"}
+class VolCompressionBreakV1(VolRegimeBaseStrategy): name, version, default_params = "vol_compression_breakout", "1.1", {"mode": "compression"}
 
 
 # =========================
@@ -187,26 +249,39 @@ class VolumeVwapBaseStrategy(BaseStrategy):
         vwap = (typical * x["volume"]).rolling(96).sum() / x["volume"].rolling(96).sum().replace(0, np.nan)
 
         if mode == "vwap_cross":
-            sig = np.where(x["close"] > vwap, 1, -1)
+            sig = np.where((x["close"] > vwap) & (x["mom_6"] > 0), 1,
+                           np.where((x["close"] < vwap) & (x["mom_6"] < 0), -1, 0))
+        elif mode == "vwap_cross_event":
+            cross_up = (x["close"] > vwap) & (x["close"].shift(1) <= vwap.shift(1))
+            sig = np.where(cross_up & (x["mom_6"] > 0), 1, 0)
+        elif mode == "vwap_cross_event_vol":
+            cross_up = (x["close"] > vwap) & (x["close"].shift(1) <= vwap.shift(1))
+            vol_ok = (x["rv_24"] < x["rv_96"]) if {"rv_24", "rv_96"}.issubset(x.columns) else pd.Series(True, index=x.index)
+            sig = np.where(cross_up & (x["mom_6"] > 0) & vol_ok.fillna(False), 1, 0)
         elif mode == "vwap_pullback":
-            sig = np.where((x["close"] > vwap) & (x["close_in_bar"] < 0.4), 1, np.where(x["close"] < vwap, -1, 0))
+            sig = np.where((x["close"] > vwap) & (x["close_in_bar"] < 0.4) & (x["close"] > x["ema_200"]), 1,
+                           np.where((x["close"] < vwap) & (x["close"] < x["ema_200"]), -1, 0))
         elif mode == "vol_spike_confirm":
             sig = np.where((x["rel_volume"] > 1.5) & (x["mom_3"] > 0), 1, np.where((x["rel_volume"] > 1.5) & (x["mom_3"] < 0), -1, 0))
         elif mode == "profile_node_proxy":
             node = x["close"].rolling(120).median()
-            sig = np.where(x["close"] > node, 1, -1)
+            sig = np.where((x["close"] > node) & (x["mom_12"] > 0), 1,
+                           np.where((x["close"] < node) & (x["mom_12"] < 0), -1, 0))
         else:  # obv-like
             obv = (np.sign(x["close"].diff()).fillna(0) * x["volume"]).cumsum()
-            sig = np.where(obv > obv.rolling(20).mean(), 1, -1)
+            sig = np.where((obv > obv.rolling(20).mean()) & (x["mom_24"] > 0), 1,
+                           np.where((obv < obv.rolling(20).mean()) & (x["mom_24"] < 0), -1, 0))
 
         return _finalize(x, pd.Series(sig, index=x.index))
 
 
-class VolumeVwapCrossV1(VolumeVwapBaseStrategy): name, version, default_params = "volume_vwap_cross", "1.0", {"mode": "vwap_cross"}
-class VolumeVwapPullbackV1(VolumeVwapBaseStrategy): name, version, default_params = "volume_vwap_pullback", "1.0", {"mode": "vwap_pullback"}
-class VolumeSpikeConfirmV1(VolumeVwapBaseStrategy): name, version, default_params = "volume_spike_confirm", "1.0", {"mode": "vol_spike_confirm"}
-class VolumeProfileNodeProxyV1(VolumeVwapBaseStrategy): name, version, default_params = "volume_profile_node_proxy", "1.0", {"mode": "profile_node_proxy"}
-class VolumeObvLikeV1(VolumeVwapBaseStrategy): name, version, default_params = "volume_obv_like", "1.0", {"mode": "obv_like"}
+class VolumeVwapCrossV1(VolumeVwapBaseStrategy): name, version, default_params = "volume_vwap_cross", "1.1", {"mode": "vwap_cross"}
+class VolumeVwapCrossEventV1(VolumeVwapBaseStrategy): name, version, default_params = "volume_vwap_cross_event", "1.0", {"mode": "vwap_cross_event"}
+class VolumeVwapCrossEventVolV1(VolumeVwapBaseStrategy): name, version, default_params = "volume_vwap_cross_event_vol", "1.0", {"mode": "vwap_cross_event_vol"}
+class VolumeVwapPullbackV1(VolumeVwapBaseStrategy): name, version, default_params = "volume_vwap_pullback", "1.1", {"mode": "vwap_pullback"}
+class VolumeSpikeConfirmV1(VolumeVwapBaseStrategy): name, version, default_params = "volume_spike_confirm", "1.1", {"mode": "vol_spike_confirm"}
+class VolumeProfileNodeProxyV1(VolumeVwapBaseStrategy): name, version, default_params = "volume_profile_node_proxy", "1.1", {"mode": "profile_node_proxy"}
+class VolumeObvLikeV1(VolumeVwapBaseStrategy): name, version, default_params = "volume_obv_like", "1.1", {"mode": "obv_like"}
 
 
 # =========================
@@ -237,11 +312,11 @@ class MTFBaseStrategy(BaseStrategy):
         return _finalize(x, pd.Series(sig, index=x.index))
 
 
-class MtfEmaConfirmV1(MTFBaseStrategy): name, version, default_params = "mtf_ema_confirm", "1.0", {"mode": "ema_htf"}
-class MtfMomentumAlignV1(MTFBaseStrategy): name, version, default_params = "mtf_momentum_align", "1.0", {"mode": "mom_align"}
-class MtfRsiTrendV1(MTFBaseStrategy): name, version, default_params = "mtf_rsi_trend", "1.0", {"mode": "rsi_trend"}
-class MtfBreakoutTrendV1(MTFBaseStrategy): name, version, default_params = "mtf_breakout_trend", "1.0", {"mode": "breakout_trend"}
-class MtfVolTrendFilterV1(MTFBaseStrategy): name, version, default_params = "mtf_vol_trend_filter", "1.0", {"mode": "vol_trend"}
+class MtfEmaConfirmV1(MTFBaseStrategy): name, version, default_params = "mtf_ema_confirm", "1.1", {"mode": "ema_htf"}
+class MtfMomentumAlignV1(MTFBaseStrategy): name, version, default_params = "mtf_momentum_align", "1.1", {"mode": "mom_align"}
+class MtfRsiTrendV1(MTFBaseStrategy): name, version, default_params = "mtf_rsi_trend", "1.1", {"mode": "rsi_trend"}
+class MtfBreakoutTrendV1(MTFBaseStrategy): name, version, default_params = "mtf_breakout_trend", "1.1", {"mode": "breakout_trend"}
+class MtfVolTrendFilterV1(MTFBaseStrategy): name, version, default_params = "mtf_vol_trend_filter", "1.1", {"mode": "vol_trend"}
 
 
 # =========================
@@ -269,11 +344,11 @@ class HybridBaseStrategy(BaseStrategy):
         return _finalize(x, pd.Series(sig, index=x.index))
 
 
-class HybridTrendRsiV1(HybridBaseStrategy): name, version, default_params = "hybrid_trend_rsi", "1.0", {"mode": "trend_rsi"}
-class HybridBreakoutVolumeV1(HybridBaseStrategy): name, version, default_params = "hybrid_breakout_volume", "1.0", {"mode": "breakout_volume"}
-class HybridMeanRevRegimeV1(HybridBaseStrategy): name, version, default_params = "hybrid_meanrev_regime", "1.0", {"mode": "meanrev_regime"}
-class HybridKeltnerRsiV1(HybridBaseStrategy): name, version, default_params = "hybrid_keltner_rsi", "1.0", {"mode": "keltner_rsi"}
-class HybridMomentumVolV1(HybridBaseStrategy): name, version, default_params = "hybrid_momentum_vol", "1.0", {"mode": "momentum_vol"}
+class HybridTrendRsiV1(HybridBaseStrategy): name, version, default_params = "hybrid_trend_rsi", "1.1", {"mode": "trend_rsi"}
+class HybridBreakoutVolumeV1(HybridBaseStrategy): name, version, default_params = "hybrid_breakout_volume", "1.1", {"mode": "breakout_volume"}
+class HybridMeanRevRegimeV1(HybridBaseStrategy): name, version, default_params = "hybrid_meanrev_regime", "1.1", {"mode": "meanrev_regime"}
+class HybridKeltnerRsiV1(HybridBaseStrategy): name, version, default_params = "hybrid_keltner_rsi", "1.1", {"mode": "keltner_rsi"}
+class HybridMomentumVolV1(HybridBaseStrategy): name, version, default_params = "hybrid_momentum_vol", "1.1", {"mode": "momentum_vol"}
 
 
 # =========================
@@ -319,11 +394,11 @@ class AdvancedEnsembleVoteV1(AdvancedBaseStrategy): name, version, default_param
 
 
 ALL_STRATEGIES = [
-    MomentumEMACrossV1, MomentumMACDV1, MomentumTrixV1, MomentumROCV1, MomentumDualV1,
-    MeanRevRSIV1, MeanRevBollingerV1, MeanRevStochV1, MeanRevZScoreV1, MeanRevDrawdownV1,
+    MomentumEMACrossV1, MomentumEMACrossEventV1, MomentumEMACrossEventVolV1, MomentumEMACrossEventVolDistV1, MomentumEMACrossEventVolSlopeV1, MomentumMACDV1, MomentumTrixV1, MomentumROCV1, MomentumDualV1,
+    MeanRevRSIV1, MeanRevBollingerV1, MeanRevStochV1, MeanRevZScoreV1, MeanRevDrawdownV1, MeanRevDrawdownLooseV1, MeanRevDrawdownDeepV1, MeanRevDrawdownLoose05V1, MeanRevDrawdownLooseVolV1, MeanRevDrawdownLoose05FastExitV1, MeanRevDrawdownLoose05SlowExitV1,
     BreakoutDonchianV1, BreakoutPivotV1, BreakoutRangeV1, BreakoutSwingV1, BreakoutOrderBlockProxyV1,
     VolAtrExpandV1, VolKeltnerV1, VolRvRegimeV1, VolTrendRegimeV1, VolCompressionBreakV1,
-    VolumeVwapCrossV1, VolumeVwapPullbackV1, VolumeSpikeConfirmV1, VolumeProfileNodeProxyV1, VolumeObvLikeV1,
+    VolumeVwapCrossV1, VolumeVwapCrossEventV1, VolumeVwapCrossEventVolV1, VolumeVwapPullbackV1, VolumeSpikeConfirmV1, VolumeProfileNodeProxyV1, VolumeObvLikeV1,
     MtfEmaConfirmV1, MtfMomentumAlignV1, MtfRsiTrendV1, MtfBreakoutTrendV1, MtfVolTrendFilterV1,
     HybridTrendRsiV1, HybridBreakoutVolumeV1, HybridMeanRevRegimeV1, HybridKeltnerRsiV1, HybridMomentumVolV1,
     AdvancedLabelAgreeV1, AdvancedMetaProxyV1, AdvancedTripleBarrierBiasV1, AdvancedRegimeTransitionV1, AdvancedEnsembleVoteV1,
